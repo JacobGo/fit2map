@@ -10,10 +10,10 @@ const INIT_COORDS = [34.0522, -118.243];
 
 // CartoDB now requires an API key. Get a free one at https://carto.com/basemaps/apikey/
 // and set it here. Without a key, CartoDB themes will not load.
-const CARTO_API_KEY = '';
+const CARTO_API_KEY = 'cb1_4xcu_1_50ecfa830b6d5255b9e06767';
 
 const DEFAULT_OPTIONS = {
-    theme: 'Stadia.AlidadeSmoothDark',
+    theme: 'CartoDB.DarkMatter',
     lineOptions: {
         color: '#0CB1E8',
         weight: 1,
