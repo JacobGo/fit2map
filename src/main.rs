@@ -1,3 +1,4 @@
+use chrono::Utc;
 use fitparser::profile::MesgNum;
 use fitparser::Value;
 use flate2::{write::GzEncoder, Compression};
@@ -12,12 +13,12 @@ use std::{
 
 const SEMICIRCLES: f64 = 180.0 / 2_147_483_648.0;
 
-fn decode(path: &PathBuf) -> Vec<[f64; 2]> {
+fn decode(path: &PathBuf) -> (Vec<[f64; 2]>, Option<String>) {
     let mut file = match File::open(path) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("open {}: {e}", path.display());
-            return vec![];
+            return (vec![], None);
         }
     };
 
@@ -25,12 +26,13 @@ fn decode(path: &PathBuf) -> Vec<[f64; 2]> {
         Ok(d) => d,
         Err(e) => {
             eprintln!("decode {}: {e}", path.display());
-            return vec![];
+            return (vec![], None);
         }
     };
 
     let mut pts: Vec<[f64; 2]> = Vec::new();
     let mut seen = HashSet::<[i32; 2]>::new();
+    let mut first_ts: Option<String> = None;
 
     for rec in data {
         if rec.kind() != MesgNum::Record {
@@ -39,26 +41,33 @@ fn decode(path: &PathBuf) -> Vec<[f64; 2]> {
 
         let mut lat: Option<i32> = None;
         let mut lon: Option<i32> = None;
+        let mut ts: Option<String> = None;
 
         for field in rec.fields() {
             match (field.name(), field.value()) {
-                ("position_lat", Value::SInt32(v)) => lat = Some(*v),
-                ("position_long", Value::SInt32(v)) => lon = Some(*v),
+                ("position_lat",  Value::SInt32(v))    => lat = Some(*v),
+                ("position_long", Value::SInt32(v))    => lon = Some(*v),
+                ("timestamp",     Value::Timestamp(dt)) => {
+                    ts = Some(dt.with_timezone(&Utc).format("%Y-%m-%dT%H:%M:%SZ").to_string());
+                }
                 _ => {}
             }
         }
 
         if let (Some(lat), Some(lon)) = (lat, lon) {
             if seen.insert([lat, lon]) {
+                if first_ts.is_none() {
+                    first_ts = ts;
+                }
                 pts.push([lat as f64 * SEMICIRCLES, lon as f64 * SEMICIRCLES]);
             }
         }
     }
 
-    pts
+    (pts, first_ts)
 }
 
-fn write_gpx_gz(path: &PathBuf, tracks: &[Vec<[f64; 2]>]) -> std::io::Result<()> {
+fn write_gpx_gz(path: &PathBuf, tracks: &[(Vec<[f64; 2]>, Option<String>)]) -> std::io::Result<()> {
     let file = File::create(path)?;
     let mut gz = GzEncoder::new(BufWriter::new(file), Compression::best());
 
@@ -67,9 +76,17 @@ fn write_gpx_gz(path: &PathBuf, tracks: &[Vec<[f64; 2]>]) -> std::io::Result<()>
         b"<gpx version=\"1.1\" creator=\"fit2map\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n",
     )?;
 
-    for track in tracks {
+    for (track, timestamp) in tracks {
         gz.write_all(b"  <trk>\n    <trkseg>\n")?;
+        let mut first = true;
         for [lat, lon] in track {
+            if first {
+                first = false;
+                if let Some(ts) = timestamp {
+                    write!(gz, "      <trkpt lat=\"{:.7}\" lon=\"{:.7}\"><time>{ts}</time></trkpt>\n", lat, lon)?;
+                    continue;
+                }
+            }
             write!(gz, "      <trkpt lat=\"{:.7}\" lon=\"{:.7}\"/>\n", lat, lon)?;
         }
         gz.write_all(b"    </trkseg>\n  </trk>\n")?;
@@ -117,15 +134,15 @@ fn main() {
     eprintln!("Decoding {} .fit files...", fit_files.len());
 
     // Parallel decode — rayon preserves input order in collect()
-    let tracks: Vec<Vec<[f64; 2]>> = fit_files
+    let tracks: Vec<(Vec<[f64; 2]>, Option<String>)> = fit_files
         .par_iter()
         .filter_map(|path| {
-            let pts = decode(path);
-            if pts.is_empty() { None } else { Some(pts) }
+            let (pts, ts) = decode(path);
+            if pts.is_empty() { None } else { Some((pts, ts)) }
         })
         .collect();
 
-    let total_pts: usize = tracks.iter().map(|t| t.len()).sum();
+    let total_pts: usize = tracks.iter().map(|(t, _)| t.len()).sum();
     eprintln!(
         "Writing {} tracks, {} points → {}",
         tracks.len(),
