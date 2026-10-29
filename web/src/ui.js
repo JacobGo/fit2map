@@ -86,12 +86,25 @@ function handleFileSelect(map, evt) {
     };
 
     const handleTrackFile = async (file) => {
-        for (const track of await extractTracks(file)) {
-            track.filename = file.name;
-            tracks.push(track);
-            map.addTrack(track);
-            modal.addSuccess();
+        modal.setStatus(`Parsing ${file.name}\u2026`);
+        modal.setProgress(0, 1);
+        const extracted = await extractTracks(file, (done, total) => {
+            modal.setStatus(`Parsing ${file.name}\u2026 ${done} / ${total}`);
+            modal.setProgress(done, total);
+        });
+        const total = extracted.length;
+        modal.setStatus(`Adding ${total} track${total !== 1 ? 's' : ''} to map\u2026`);
+        modal.setProgress(0, total);
+        for (let i = 0; i < total; i++) {
+            extracted[i].filename = file.name;
+            tracks.push(extracted[i]);
+            map.addTrack(extracted[i]);
+            if ((i + 1) % 25 === 0 || i === total - 1) {
+                modal.setProgress(i + 1, total);
+                await new Promise(r => setTimeout(r, 0));
+            }
         }
+        modal.addSuccess();
     };
 
     const handleFile = async file => {
@@ -122,10 +135,21 @@ function handleDragOver(evt) {
 function buildUploadModal(numFiles) {
     let numLoaded = 0;
     let failures = [];
-    let failureString = failures.length ? `, <span class='failures'>${failures.length} failed</span>` : '';
-    let getModalContent = () => `
+    let status = '';
+    let progressValue = 0;
+    let progressMax = 0;
+
+    const failureStr = () => failures.length
+        ? `, <span class='failures'>${failures.length} failed</span>`
+        : '';
+
+    const getModalContent = () => `
         <h1>Reading files...</h1>
-        <p>${numLoaded} loaded${failureString} of <b>${numFiles}</b></p>`;
+        <p>${numLoaded} loaded${failureStr()} of <b>${numFiles}</b></p>
+        ${status ? `<p class="upload-status">${status}</p>` : ''}
+        ${progressMax > 0
+            ? `<progress id="upload-progress" value="${progressValue}" max="${progressMax}"></progress>`
+            : ''}`;
 
     let modal = picoModal({
         content: getModalContent(),
@@ -152,13 +176,28 @@ function buildUploadModal(numFiles) {
         modal.modalElem().insertAdjacentHTML('afterbegin', body);
     };
 
+    modal.setStatus = text => {
+        status = text;
+        modal.setContent(getModalContent());
+    };
+
+    modal.setProgress = (value, max) => {
+        progressValue = value;
+        progressMax = max;
+        modal.setContent(getModalContent());
+    };
+
     modal.addFailure = failure => {
         failures.push(failure);
+        status = '';
+        progressMax = 0;
         modal.setContent(getModalContent());
     };
 
     modal.addSuccess = () => {
         numLoaded++;
+        status = '';
+        progressMax = 0;
         modal.setContent(getModalContent());
     };
 

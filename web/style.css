@@ -56,6 +56,18 @@ form {
     box-sizing: border-box;
 }
 
+.upload-status {
+    font-style: italic;
+    color: #555;
+    margin: 6px 0 2px;
+}
+
+#upload-progress {
+    display: block;
+    width: 100%;
+    margin-top: 6px;
+}
+
 .failures {
     color: red;
 }

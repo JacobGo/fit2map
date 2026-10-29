@@ -30,76 +30,83 @@ function queryElements(element, tagName) {
     return Array.from(element.querySelectorAll(tagName));
 }
 
-function extractGPXTracks(gpx) {
-    const tracks = queryElements(gpx, 'trk');
-    const routes = queryElements(gpx, 'rte');
+// Regex-based attribute extractors (order-independent)
+const LAT_RE = /\blat="([^"]+)"/;
+const LON_RE = /\blon="([^"]+)"/;
+const TIME_RE = /<time>([^<]+)<\/time>/;
+// Matches <trkpt> / <rtept> — captures attrs and optional inner content
+const TRKPT_RE = /<trkpt\b([^/\n>]*)(?:\/>|>([\s\S]*?)<\/trkpt>)/g;
+const RTEPT_RE = /<rtept\b([^/\n>]*)(?:\/>|>([\s\S]*?)<\/rtept>)/g;
 
-    if (tracks.length === 0 && routes.length === 0) {
-        console.log('GPX file has neither tracks nor routes!', gpx);
-        throw new Error('Unexpected gpx file format.');
-    }
-
-    const parsedTracks = [];
-
-    for (const trk of tracks) {
-        const name = getTextContent(trk, 'name') || 'untitled';
-        const activityType = getTextContent(trk, 'type') || null;
-        let timestamp;
-
-        for (const trkseg of queryElements(trk, 'trkseg')) {
-            const points = [];
-
-            for (const trkpt of queryElements(trkseg, 'trkpt')) {
-                const timeEl = trkpt.querySelector('time');
-                if (timeEl && timeEl.textContent) {
-                    timestamp = new Date(timeEl.textContent);
-                }
-
-                const lat = trkpt.getAttribute('lat');
-                const lon = trkpt.getAttribute('lon');
-
-                if (lat !== null && lon !== null) {
-                    points.push({
-                        lat: parseFloat(lat),
-                        lng: parseFloat(lon),
-                    });
-                }
-            }
-
-            if (points.length > 0) {
-                parsedTracks.push({ timestamp, points, name, activityType });
-            }
+function parsePts(segText, ptRe) {
+    const points = [];
+    let timestamp;
+    ptRe.lastIndex = 0;
+    let m;
+    while ((m = ptRe.exec(segText)) !== null) {
+        const latM = LAT_RE.exec(m[1]);
+        const lonM = LON_RE.exec(m[1]);
+        if (!latM || !lonM) continue;
+        points.push({ lat: parseFloat(latM[1]), lng: parseFloat(lonM[1]) });
+        if (!timestamp && m[2]) {
+            const tm = TIME_RE.exec(m[2]);
+            if (tm) timestamp = new Date(tm[1]);
         }
     }
+    return { points, timestamp };
+}
 
-    for (const rte of routes) {
-        const name = getTextContent(rte, 'name') || 'untitled';
-        let timestamp;
-        const points = [];
+function parseTrkBlock(trkText) {
+    const nameM = /<name>([^<]*)<\/name>/i.exec(trkText);
+    const typeM = /<type>([^<]*)<\/type>/i.exec(trkText);
+    const name = nameM ? nameM[1] : 'untitled';
+    const activityType = typeM ? typeM[1].trim() : null;
+    const result = [];
+    let pos = 0;
+    while ((pos = trkText.indexOf('<trkseg>', pos)) !== -1) {
+        const end = trkText.indexOf('</trkseg>', pos);
+        if (end === -1) break;
+        const { points, timestamp } = parsePts(trkText.slice(pos + 8, end), TRKPT_RE);
+        if (points.length > 0) result.push({ timestamp, points, name, activityType });
+        pos = end + 9;
+    }
+    return result;
+}
 
-        for (const pt of queryElements(rte, 'rtept')) {
-            const timeEl = pt.querySelector('time');
-            if (timeEl && timeEl.textContent) {
-                timestamp = new Date(timeEl.textContent);
-            }
+function parseRteBlock(rteText) {
+    const nameM = /<name>([^<]*)<\/name>/i.exec(rteText);
+    const name = nameM ? nameM[1] : 'untitled';
+    const { points, timestamp } = parsePts(rteText, RTEPT_RE);
+    return points.length > 0 ? [{ timestamp, points, name }] : [];
+}
 
-            const lat = pt.getAttribute('lat');
-            const lon = pt.getAttribute('lon');
-
-            if (lat !== null && lon !== null) {
-                points.push({
-                    lat: parseFloat(lat),
-                    lng: parseFloat(lon),
-                });
-            }
-        }
-
-        if (points.length > 0) {
-            parsedTracks.push({ timestamp, points, name });
+async function extractGPXTracks(text, onProgress) {
+    const blocks = [];
+    for (const [open, close, type] of [['<trk>', '</trk>', 'trk'], ['<rte>', '</rte>', 'rte']]) {
+        let pos = 0;
+        while ((pos = text.indexOf(open, pos)) !== -1) {
+            const end = text.indexOf(close, pos);
+            if (end === -1) break;
+            blocks.push({ pos, end: end + close.length, type });
+            pos = end + close.length;
         }
     }
+    if (blocks.length === 0) throw new Error('Unexpected gpx file format.');
+    blocks.sort((a, b) => a.pos - b.pos);
 
-    return parsedTracks;
+    const tracks = [];
+    for (let i = 0; i < blocks.length; i++) {
+        const { pos, end, type } = blocks[i];
+        const parsed = type === 'trk'
+            ? parseTrkBlock(text.slice(pos, end))
+            : parseRteBlock(text.slice(pos, end));
+        tracks.push(...parsed);
+        if ((i + 1) % 25 === 0 || i === blocks.length - 1) {
+            onProgress && onProgress(i + 1, blocks.length);
+            await new Promise(r => setTimeout(r, 0));
+        }
+    }
+    return tracks;
 }
 
 function extractTCXTracks(tcx, name) {
@@ -228,7 +235,7 @@ async function readFile(file, encoding, isGzipped) {
         : buffer;
 }
 
-export default function extractTracks(file) {
+export default function extractTracks(file, onProgress) {
     const isGzipped = /\.gz$/i.test(file.name);
     const strippedName = file.name.replace(/\.gz$/i, '');
     const format = strippedName.split('.').pop().toLowerCase();
@@ -237,17 +244,15 @@ export default function extractTracks(file) {
     case 'gpx':
     case 'tcx':
         return readFile(file, 'text', isGzipped)
-            .then(textContents => new Promise((resolve, reject) => {
-                const doc = parseXML(textContents);
-
-                if (doc.querySelector('gpx')) {
-                    resolve(extractGPXTracks(doc));
-                } else if (doc.querySelector('TrainingCenterDatabase')) {
-                    resolve(extractTCXTracks(doc, strippedName));
-                } else {
-                    reject(new Error('Invalid file type.'));
+            .then(text => {
+                const trimmed = text.trimStart();
+                if (/<gpx[\s>]/.test(trimmed)) {
+                    return extractGPXTracks(trimmed, onProgress);
+                } else if (/<TrainingCenterDatabase[\s>]/.test(trimmed)) {
+                    return extractTCXTracks(parseXML(trimmed), strippedName);
                 }
-            }));
+                throw new Error('Invalid file type.');
+            });
 
     case 'fit':
         return readFile(file, 'binary', isGzipped)

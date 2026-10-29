@@ -2,6 +2,7 @@ use chrono::Utc;
 use fitparser::profile::MesgNum;
 use fitparser::Value;
 use flate2::{write::GzEncoder, Compression};
+use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::{
     collections::HashSet,
@@ -67,7 +68,7 @@ fn decode(path: &PathBuf) -> (Vec<[f64; 2]>, Option<String>) {
     (pts, first_ts)
 }
 
-fn write_gpx_gz(path: &PathBuf, tracks: &[(Vec<[f64; 2]>, Option<String>)]) -> std::io::Result<()> {
+fn write_gpx_gz(path: &PathBuf, tracks: &[(Vec<[f64; 2]>, Option<String>)], pb: &ProgressBar) -> std::io::Result<()> {
     let file = File::create(path)?;
     let mut gz = GzEncoder::new(BufWriter::new(file), Compression::best());
 
@@ -77,6 +78,7 @@ fn write_gpx_gz(path: &PathBuf, tracks: &[(Vec<[f64; 2]>, Option<String>)]) -> s
     )?;
 
     for (track, timestamp) in tracks {
+        pb.inc(1);
         gz.write_all(b"  <trk>\n    <trkseg>\n")?;
         let mut first = true;
         for [lat, lon] in track {
@@ -131,27 +133,49 @@ fn main() {
 
     fit_files.sort(); // deterministic output order
 
-    eprintln!("Decoding {} .fit files...", fit_files.len());
+    let decode_bar = ProgressBar::new(fit_files.len() as u64);
+    decode_bar.set_style(
+        ProgressStyle::with_template(
+            "{bar:50.green/black} {pos}/{len} files  [{elapsed_precise}]"
+        )
+        .unwrap()
+        .progress_chars("█▉▊▋▌▍▎▏  "),
+    );
 
     // Parallel decode — rayon preserves input order in collect()
     let tracks: Vec<(Vec<[f64; 2]>, Option<String>)> = fit_files
         .par_iter()
         .filter_map(|path| {
             let (pts, ts) = decode(path);
+            decode_bar.inc(1);
             if pts.is_empty() { None } else { Some((pts, ts)) }
         })
         .collect();
 
+    decode_bar.finish_and_clear();
+
     let total_pts: usize = tracks.iter().map(|(t, _)| t.len()).sum();
+
+    let write_bar = ProgressBar::new(tracks.len() as u64);
+    write_bar.set_style(
+        ProgressStyle::with_template(
+            "{bar:50.cyan/black} {pos}/{len} tracks  [{elapsed_precise}]"
+        )
+        .unwrap()
+        .progress_chars("█▉▊▋▌▍▎▏  "),
+    );
+    write_bar.set_message(format!("{total_pts} points"));
+
+    if let Err(e) = write_gpx_gz(&output_path, &tracks, &write_bar) {
+        eprintln!("Error writing output: {e}");
+        std::process::exit(1);
+    }
+
+    write_bar.finish_and_clear();
     eprintln!(
-        "Writing {} tracks, {} points → {}",
+        "Wrote {} tracks, {} points → {}",
         tracks.len(),
         total_pts,
         output_path.display()
     );
-
-    if let Err(e) = write_gpx_gz(&output_path, &tracks) {
-        eprintln!("Error writing output: {e}");
-        std::process::exit(1);
-    }
 }

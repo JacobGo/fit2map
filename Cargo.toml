@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 fitparser = "0.6"
 chrono = "0.4"
+indicatif = "0.17"
 rayon = "1"
 flate2 = "1"
 
