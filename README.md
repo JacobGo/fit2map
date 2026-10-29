@@ -91,3 +91,19 @@ Push to `main`. The workflow in `.github/workflows/pages.yml` builds the web app
 and deploys automatically.
 
 Enable in repo settings: **Settings → Pages → Source → GitHub Actions**.
+
+---
+
+## Credits & license
+
+The web application is based on **[dérive](https://github.com/erik/derive)** by
+[Erik Price](https://github.com/erik), used under the
+[MIT License](https://github.com/erik/derive/blob/master/LICENSE).
+Modifications include a canvas-based track renderer for large dataset
+performance and integration with the fit2map CLI tool.
+
+`web/src/track.js` includes GPX parsing logic adapted from
+[taterbase/gpx-parser](https://github.com/taterbase/gpx-parser).
+
+The Rust CLI tool and canvas renderer are original work.
+This project is released under the [MIT License](LICENSE).
