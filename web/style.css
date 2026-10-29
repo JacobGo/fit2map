@@ -71,8 +71,7 @@ ul.failures {
 #scrubber {
     position: fixed;
     bottom: 20px;
-    left: 50%;
-    transform: translateX(-50%);
+    right: 20px;
     background: rgba(20, 20, 20, 0.85);
     color: #ddd;
     padding: 8px 16px;
@@ -81,8 +80,8 @@ ul.failures {
     align-items: center;
     gap: 12px;
     z-index: 1000;
-    min-width: 380px;
-    max-width: 90vw;
+    width: 380px;
+    max-width: calc(100vw - 40px);
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
 }
 
