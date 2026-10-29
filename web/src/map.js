@@ -4,7 +4,6 @@ import 'leaflet-providers';
 import 'leaflet-easybutton';
 
 import * as ui from './ui';
-import TrackLayer from './renderer';
 
 
 const INIT_COORDS = [34.0522, -118.243];
@@ -52,9 +51,6 @@ export default class GpxMap {
             zoom: 10,
             preferCanvas: true,
         });
-
-        // Single canvas layer for all GPS tracks
-        this._trackLayer = new TrackLayer().addTo(this.map);
 
         L.easyButton({
             type: 'animate',
@@ -161,22 +157,25 @@ export default class GpxMap {
         }
 
         if (opts.lineOptions.overrideExisting) {
-            // Push new style onto all existing track handles
-            const { color, weight, opacity } = opts.lineOptions;
-            for (const track of this.tracks) {
-                this._trackLayer.updateTrack(track.handle, { color, weight: parseFloat(weight), opacity: parseFloat(opacity) });
-            }
+            this.tracks.forEach(({ line }) => {
+                line.setStyle({
+                    color:   opts.lineOptions.color,
+                    weight:  opts.lineOptions.weight,
+                    opacity: opts.lineOptions.opacity,
+                });
+                line.redraw();
+            });
 
             const mo = opts.markerOptions;
-            for (const marker of this.imageMarkers) {
+            this.imageMarkers.forEach(marker => {
                 marker.setStyle({
-                    color: mo.color,
-                    weight: mo.weight,
+                    color:   mo.color,
+                    weight:  mo.weight,
                     opacity: mo.opacity,
-                    radius: mo.radius,
+                    radius:  mo.radius,
                 });
                 marker.redraw();
-            }
+            });
         }
 
         this.options = opts;
@@ -195,9 +194,12 @@ export default class GpxMap {
 
         for (const track of this.tracks) {
             const hide = shouldHide.some(f => f(track));
-            if (hide !== !track.visible) {
-                track.visible = !hide;
-                this._trackLayer.setTrackVisible(track.handle, !hide);
+            if (hide && track.visible) {
+                track.line.remove();
+                track.visible = false;
+            } else if (!hide && !track.visible) {
+                track.line.addTo(this.map);
+                track.visible = true;
             }
         }
     }
@@ -224,8 +226,7 @@ export default class GpxMap {
                 if (color) lineOptions.color = color;
             }
 
-            // Legacy Strava filename color detection
-            if (/-( Hike|Walk)\.gpx/.test(track.filename)) {
+            if (/-(Hike|Walk)\.gpx/.test(track.filename)) {
                 lineOptions.color = ACTIVITY_COLORS['hiking'];
             } else if (/-Run\.gpx/.test(track.filename)) {
                 lineOptions.color = ACTIVITY_COLORS['running'];
@@ -236,8 +237,8 @@ export default class GpxMap {
             }
         }
 
-        const handle = this._trackLayer.addTrack(track.points, lineOptions);
-        this.tracks.push(Object.assign({ handle, visible: true }, track));
+        const line = L.polyline(track.points, lineOptions).addTo(this.map);
+        this.tracks.push(Object.assign({ line, visible: true }, track));
     }
 
     async markerClick(image) {
@@ -253,8 +254,7 @@ export default class GpxMap {
     async addImage(image) {
         const lat = await image.latitude();
         const lng = await image.longitude();
-        const mo = this.options.markerOptions;
-        const marker = L.circleMarker(L.latLng(lat, lng), Object.assign({}, mo))
+        const marker = L.circleMarker(L.latLng(lat, lng), Object.assign({}, this.options.markerOptions))
             .on('click', () => this.markerClick(image))
             .addTo(this.map);
         this.imageMarkers.push(marker);
@@ -267,15 +267,8 @@ export default class GpxMap {
     center() {
         if (this.tracks.length === 0 && this.imageMarkers.length === 0) return;
 
-        const bounds = this._trackLayer.getBounds();
-        const allBounds = bounds
-            ? this.imageMarkers.reduce(
-                (b, m) => b.extend(m.getLatLng()),
-                bounds
-              )
-            : new L.featureGroup(this.imageMarkers).getBounds();
-
-        this.map.fitBounds(allBounds, {
+        const tracksAndImages = this.tracks.map(t => t.line).concat(this.imageMarkers);
+        this.map.fitBounds(L.featureGroup(tracksAndImages).getBounds(), {
             noMoveStart: true,
             animate: false,
             padding: [50, 20],
@@ -285,75 +278,64 @@ export default class GpxMap {
     }
 
     screenshot(format, domNode) {
-        if (format === 'png') {
-            // Composite: first get tiles via leaflet-image, then overlay tracks canvas
-            leafletImage(this.map, (err, tilesCanvas) => {
-                const trackCanvas = this._trackLayer._canvas;
+        leafletImage(this.map, (err, canvas) => {
+            if (err) return window.alert(err);
 
-                const out = document.createElement('canvas');
-                out.width  = tilesCanvas ? tilesCanvas.width  : trackCanvas.width;
-                out.height = tilesCanvas ? tilesCanvas.height : trackCanvas.height;
-                const ctx = out.getContext('2d');
+            const link = document.createElement('a');
 
-                if (tilesCanvas) ctx.drawImage(tilesCanvas, 0, 0);
-                if (trackCanvas) ctx.drawImage(trackCanvas, 0, 0);
-
-                const link = document.createElement('a');
+            if (format === 'png') {
                 link.download = 'fit2map-export.png';
                 link.innerText = 'Download as PNG';
-                out.toBlob(blob => {
+                canvas.toBlob(blob => {
                     link.href = URL.createObjectURL(blob);
                     domNode.innerText = '';
                     domNode.appendChild(link);
                 });
-            });
-        } else if (format === 'svg') {
-            const scale = 2;
-            const bounds = this.map.getPixelBounds();
-            bounds.min = bounds.min.multiplyBy(scale);
-            bounds.max = bounds.max.multiplyBy(scale);
-            const { x: left, y: top } = bounds.min;
-            const { x: width, y: height } = bounds.getSize();
+            } else if (format === 'svg') {
+                const scale = 2;
+                const bounds = this.map.getPixelBounds();
+                bounds.min = bounds.min.multiplyBy(scale);
+                bounds.max = bounds.max.multiplyBy(scale);
+                const left   = bounds.min.x;
+                const top    = bounds.min.y;
+                const width  = bounds.getSize().x;
+                const height = bounds.getSize().y;
 
-            const svg = L.SVG.create('svg');
-            svg.setAttribute('viewBox', `${left} ${top} ${width} ${height}`);
-            const root = L.SVG.create('g');
+                const svg  = L.SVG.create('svg');
+                const root = L.SVG.create('g');
+                svg.setAttribute('viewBox', `${left} ${top} ${width} ${height}`);
 
-            for (const track of this.tracks) {
-                if (!track.visible) continue;
-                const h = track.handle;
+                this.tracks.forEach(track => {
+                    const pts = track.points
+                        .map(ll => this.map.project(ll).multiplyBy(scale * 10).round().divideBy(10))
+                        .reduce((acc, next) => {
+                            const prev = acc[acc.length - 1];
+                            if (!prev || prev.x !== next.x || prev.y !== next.y) acc.push(next);
+                            return acc;
+                        }, []);
 
-                const pts = track.points
-                    .map(ll => this.map.project(ll).multiplyBy(scale * 10).round().divideBy(10))
-                    .reduce((acc, next) => {
-                        const prev = acc[acc.length - 1];
-                        if (!prev || prev.x !== next.x || prev.y !== next.y) acc.push(next);
-                        return acc;
-                    }, []);
+                    if (!pts.some(pt => bounds.contains(pt))) return;
 
-                if (!pts.some(pt => bounds.contains(pt))) continue;
+                    const el = L.SVG.create('path');
+                    el.setAttribute('d', L.SVG.pointsToPath([pts], false));
+                    el.setAttribute('stroke',         track.line.options.color);
+                    el.setAttribute('stroke-opacity', track.line.options.opacity);
+                    el.setAttribute('stroke-width',   scale * track.line.options.weight);
+                    el.setAttribute('stroke-linecap',  'round');
+                    el.setAttribute('stroke-linejoin', 'round');
+                    el.setAttribute('fill', 'none');
+                    root.appendChild(el);
+                });
 
-                const el = L.SVG.create('path');
-                el.setAttribute('d', L.SVG.pointsToPath([pts], false));
-                el.setAttribute('stroke', h.color);
-                el.setAttribute('stroke-opacity', h.opacity);
-                el.setAttribute('stroke-width', scale * h.weight);
-                el.setAttribute('stroke-linecap', 'round');
-                el.setAttribute('stroke-linejoin', 'round');
-                el.setAttribute('fill', 'none');
-                root.appendChild(el);
+                svg.appendChild(root);
+                link.innerText  = 'Download as SVG';
+                link.download   = 'fit2map-export.svg';
+                link.href = URL.createObjectURL(
+                    new Blob([(new XMLSerializer()).serializeToString(svg)], { type: 'application/octet-stream' })
+                );
+                domNode.innerText = '';
+                domNode.appendChild(link);
             }
-
-            svg.appendChild(root);
-
-            const link = document.createElement('a');
-            link.innerText = 'Download as SVG';
-            link.download = 'fit2map-export.svg';
-            link.href = URL.createObjectURL(
-                new Blob([(new XMLSerializer()).serializeToString(svg)], { type: 'application/octet-stream' })
-            );
-            domNode.innerText = '';
-            domNode.appendChild(link);
-        }
+        });
     }
 }
