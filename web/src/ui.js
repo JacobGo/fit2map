@@ -192,14 +192,14 @@ export function buildSettingsModal(tracks, opts, updateCallback) {
     let overrideExisting = opts.lineOptions.overrideExisting ? 'checked' : '';
 
     if (tracks.length > 0) {
-        let allSameColor = tracks.every(({line}) => {
-            return line.options.color === tracks[0].line.options.color;
+        let allSameColor = tracks.every(({handle}) => {
+            return handle.color === tracks[0].handle.color;
         });
 
         if (!allSameColor) {
             overrideExisting = false;
         } else {
-            opts.lineOptions.color = tracks[0].line.options.color;
+            opts.lineOptions.color = tracks[0].handle.color;
         }
     }
 
