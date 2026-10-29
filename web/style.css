@@ -67,3 +67,51 @@ ul.failures {
     padding-top: 1em;
     padding-bottom: 1em;
 }
+
+#scrubber {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(20, 20, 20, 0.85);
+    color: #ddd;
+    padding: 8px 16px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    z-index: 1000;
+    min-width: 380px;
+    max-width: 90vw;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+#scrubber.hidden { display: none; }
+
+#scrubber-range {
+    flex: 1;
+    min-width: 200px;
+    cursor: pointer;
+}
+
+#scrubber-play {
+    background: none;
+    border: 1px solid #888;
+    color: #ddd;
+    border-radius: 4px;
+    padding: 2px 10px;
+    cursor: pointer;
+    font-size: 14px;
+}
+
+#scrubber-play:hover {
+    border-color: #ccc;
+    color: white;
+}
+
+#scrubber-date {
+    min-width: 90px;
+    text-align: right;
+    font-size: 13px;
+    white-space: nowrap;
+}

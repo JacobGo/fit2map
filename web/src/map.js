@@ -119,6 +119,7 @@ export default class GpxMap {
         };
 
         this.clearScroll();
+        this._initUrlState();
         this.viewAll.disable();
         this.switchTheme(this.options.theme);
         this.requestBrowserLocation();
@@ -127,6 +128,25 @@ export default class GpxMap {
     clearScroll() {
         this.scrolled = false;
         this.map.addEventListener('movestart', this.markScrolled);
+    }
+
+    _initUrlState() {
+        const hash = window.location.hash.slice(1);
+        const parts = hash.split('/');
+        if (parts.length === 3) {
+            const zoom = parseInt(parts[0]);
+            const lat  = parseFloat(parts[1]);
+            const lng  = parseFloat(parts[2]);
+            if (!isNaN(zoom) && !isNaN(lat) && !isNaN(lng)) {
+                this.map.setView([lat, lng], zoom);
+            }
+        }
+
+        this.map.on('moveend', () => {
+            const c = this.map.getCenter();
+            const z = this.map.getZoom();
+            history.replaceState(null, '', `#${z}/${c.lat.toFixed(5)}/${c.lng.toFixed(5)}`);
+        });
     }
 
     switchTheme(themeName) {
@@ -157,13 +177,14 @@ export default class GpxMap {
         }
 
         if (opts.lineOptions.overrideExisting) {
-            this.tracks.forEach(({ line }) => {
-                line.setStyle({
+            this.tracks.forEach(track => {
+                track.line.setStyle({
                     color:   opts.lineOptions.color,
                     weight:  opts.lineOptions.weight,
                     opacity: opts.lineOptions.opacity,
                 });
-                line.redraw();
+                track._baseOpacity = opts.lineOptions.opacity;
+                track.line.redraw();
             });
 
             const mo = opts.markerOptions;
@@ -179,6 +200,7 @@ export default class GpxMap {
         }
 
         this.options = opts;
+        this._applyScrub();
     }
 
     applyFilters() {
@@ -202,6 +224,8 @@ export default class GpxMap {
                 track.visible = true;
             }
         }
+
+        this._applyScrub();
     }
 
     requestBrowserLocation() {
@@ -214,6 +238,32 @@ export default class GpxMap {
                 this.clearScroll();
             }
         });
+    }
+
+    _haversineKm(points) {
+        const R = 6371;
+        let dist = 0;
+        for (let i = 1; i < points.length; i++) {
+            const lat1 = points[i - 1].lat * Math.PI / 180;
+            const lat2 = points[i].lat * Math.PI / 180;
+            const dlat = lat2 - lat1;
+            const dlng = (points[i].lng - points[i - 1].lng) * Math.PI / 180;
+            const a = Math.sin(dlat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dlng / 2) ** 2;
+            dist += 2 * R * Math.asin(Math.sqrt(a));
+        }
+        return dist;
+    }
+
+    _showTrackPopup(track, e) {
+        const km   = this._haversineKm(track.points).toFixed(1);
+        const date = track.timestamp ? track.timestamp.toLocaleDateString() : 'Unknown date';
+        const type = track.activityType
+            ? track.activityType.charAt(0).toUpperCase() + track.activityType.slice(1)
+            : (track.name || 'Activity');
+        L.popup()
+            .setLatLng(e.latlng)
+            .setContent(`<b>${type}</b><br>${date}<br>${km} km`)
+            .openOn(this.map);
     }
 
     addTrack(track) {
@@ -237,8 +287,117 @@ export default class GpxMap {
             }
         }
 
-        const line = L.polyline(track.points, lineOptions).addTo(this.map);
-        this.tracks.push(Object.assign({ line, visible: true }, track));
+        const line = L.polyline(track.points, lineOptions)
+            .on('click', e => this._showTrackPopup(track, e))
+            .addTo(this.map);
+        this.tracks.push(Object.assign({ line, visible: true, _baseOpacity: lineOptions.opacity }, track));
+        this._updateScrubber();
+    }
+
+    _updateScrubber() {
+        const timestamps = this.tracks.filter(t => t.timestamp).map(t => t.timestamp.getTime());
+        if (timestamps.length === 0) return;
+
+        const minTs = Math.min(...timestamps);
+        const maxTs = Math.max(...timestamps);
+
+        const scrubberEl = document.getElementById('scrubber');
+        const rangeEl    = document.getElementById('scrubber-range');
+        const dateEl     = document.getElementById('scrubber-date');
+        if (!scrubberEl) return;
+
+        rangeEl.min = minTs;
+        rangeEl.max = maxTs;
+
+        if (!this._scrubberTouched) {
+            rangeEl.value = maxTs;
+            dateEl.textContent = new Date(maxTs).toLocaleDateString();
+        }
+
+        scrubberEl.classList.remove('hidden');
+        this._initScrubberControls();
+    }
+
+    _initScrubberControls() {
+        if (this._scrubberInited) return;
+        this._scrubberInited = true;
+
+        const rangeEl = document.getElementById('scrubber-range');
+        const dateEl  = document.getElementById('scrubber-date');
+        const playEl  = document.getElementById('scrubber-play');
+
+        rangeEl.addEventListener('input', () => {
+            this._scrubberTouched = true;
+            const ts = parseInt(rangeEl.value);
+            dateEl.textContent = new Date(ts).toLocaleDateString();
+            this._scrubTo(ts);
+        });
+
+        let rafId = null;
+
+        const stopAnim = () => {
+            if (rafId !== null) {
+                cancelAnimationFrame(rafId);
+                rafId = null;
+            }
+            playEl.innerHTML = '&#9654;';
+        };
+
+        const startAnim = () => {
+            const minTs = parseInt(rangeEl.min);
+            const maxTs = parseInt(rangeEl.max);
+            let startTs = parseInt(rangeEl.value);
+
+            if (startTs >= maxTs) startTs = minTs;
+
+            const duration = 10000;
+            const elapsed0 = ((startTs - minTs) / (maxTs - minTs)) * duration;
+            const t0 = performance.now() - elapsed0;
+
+            playEl.innerHTML = '&#9646;&#9646;';
+
+            const step = (now) => {
+                const progress = Math.min((now - t0) / duration, 1);
+                const ts = parseInt(rangeEl.min) + (parseInt(rangeEl.max) - parseInt(rangeEl.min)) * progress;
+                rangeEl.value = ts;
+                this._scrubberTouched = true;
+                dateEl.textContent = new Date(ts).toLocaleDateString();
+                this._scrubTo(ts);
+                if (progress < 1) {
+                    rafId = requestAnimationFrame(step);
+                } else {
+                    stopAnim();
+                }
+            };
+
+            rafId = requestAnimationFrame(step);
+        };
+
+        playEl.addEventListener('click', () => {
+            if (rafId !== null) {
+                stopAnim();
+            } else {
+                startAnim();
+            }
+        });
+    }
+
+    _scrubTo(ts) {
+        const scrubDate = new Date(ts);
+        for (const track of this.tracks) {
+            if (!track.timestamp) continue;
+            if (track.timestamp > scrubDate) {
+                track.line.setStyle({ opacity: 0 });
+            } else if (track.visible) {
+                track.line.setStyle({ opacity: track._baseOpacity });
+            }
+        }
+    }
+
+    _applyScrub() {
+        if (!this._scrubberInited) return;
+        const rangeEl = document.getElementById('scrubber-range');
+        if (rangeEl) this._scrubTo(parseInt(rangeEl.value));
     }
 
     async markerClick(image) {
